@@ -202,20 +202,29 @@ export interface UsageBucket {
 }
 
 export interface UsageStats {
-  /** 终身累计（= windows.all），不受明细裁剪影响 */
+  /** 终身累计，不受明细裁剪影响 */
   totals: UsageBucket;
-  /** 时间窗口统计，来自按天汇总而非明细 */
-  windows: {
-    today: UsageBucket;
-    d7: UsageBucket;
-    d15: UsageBucket;
-    d30: UsageBucket;
-    all: UsageBucket;
-  };
   byAccount: ({ name: string } & UsageBucket)[];
-  byModel: ({ name: string } & UsageBucket)[];
+  byModel: ({ name: string; label: string } & UsageBucket)[];
   byApi: ({ name: string } & UsageBucket)[];
   daily: ({ day: string } & UsageBucket)[];
+  /** 活动热力图：有数据的日子（空白的日子在图上就是空格） */
+  heatmap: { day: string; tokens: number; requests: number }[];
+  /** 活动概览：活跃天数 / 峰值单日 / 连续天数 */
+  activity: {
+    activeDays: number;
+    totalRequests: number;
+    totalTokens: number;
+    peakDay: string | null;
+    peakTokens: number;
+    currentStreak: number;
+    longestStreak: number;
+  };
+  /** 按模型 × 天的 Token 趋势；values 与 days 对齐，当天没请求为 null */
+  modelDaily: {
+    days: string[];
+    series: { name: string; label: string; values: (number | null)[] }[];
+  };
   recent: {
     ts: number; edition: string; accountName: string; model: string;
     promptTokens: number; completionTokens: number; totalTokens: number;
@@ -283,6 +292,18 @@ export interface ZcodeStatus {
   wantedBaseUrl: string;
   edition: string;
   enabled: boolean;
+}
+
+/** 接入 ZCode 时可勾选的一个模型（与将被写入的形态一致） */
+export interface ZcodeModelOption {
+  id: string;
+  /** 上游 key，仅用于展示对应关系 */
+  upstreamKey: string;
+  label: string;
+  contextWindow: number;
+  maxOutput: number;
+  vision: boolean;
+  reasoning: boolean;
 }
 
 export const ACCOUNT_GROUPS = [

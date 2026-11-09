@@ -134,6 +134,26 @@ function supportsImage(model) {
   return model.isVl !== false;
 }
 
+/**
+ * 把一个上游模型条目转成「接入 ZCode 时的可选项」。
+ *
+ * UI 用它渲染勾选列表，apply 用它过滤用户选中的子集，zcodeStatus 也用它回读——
+ * 三处必须是同一个形态，否则勾选项与最终写入的 id 会对不上。
+ */
+export function zcodeModelOption(model) {
+  const label = String(model.displayName || model.id || "").trim();
+  return {
+    id: zcodeModelId(model),
+    // 上游 key，仅用于展示「这个 id 对应哪个模型」，不写进配置
+    upstreamKey: resolveModelRequest(model.id).key,
+    label: label || model.id,
+    contextWindow: model.contextWindow || ZCODE_CONTEXT_WINDOW,
+    maxOutput: model.maxOutput || ZCODE_MAX_OUTPUT,
+    vision: supportsImage(model),
+    reasoning: Boolean(model.isReasoning),
+  };
+}
+
 /** 在现有规则里找指向本网关的那一条（用户之前手动加过同地址的 provider） */
 function findProviderRuleIndex(rules, baseUrl) {
   const target = normalizeBaseUrl(baseUrl);

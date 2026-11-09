@@ -2,7 +2,7 @@
 
 import type {
   Account, AppStatus, AutoCheckinStatus, BackupResult, KeepaliveStatus, ChatItem, CheckinResult, CheckinState, ClientInfo, PlanInfo, ProxyConfig, QuotaInfo,
-  Settings, UpdateDownloadStatus, UpdateInfo, UsageStats, Workspace, ZcodeStatus,
+  Settings, UpdateDownloadStatus, UpdateInfo, UsageStats, Workspace, ZcodeModelOption, ZcodeStatus,
 } from "@/lib/types";
 
 const BASE = "/api";
@@ -111,10 +111,15 @@ export const api = {
 
   /* ZCode 客户端接入 */
   getZcodeStatus: (edition: string) => request<ZcodeStatus>(`/zcode/status?edition=${edition}`),
-  applyZcode: (edition: string) =>
+  /** 拉取接入前可选的模型清单（来自上游 /v1/models，与将写入的形态一致） */
+  getZcodeModels: (edition: string) =>
+    request<{ models: ZcodeModelOption[]; edition: string; upstreamOk: boolean }>(
+      `/zcode/models?edition=${edition}`,
+    ),
+  applyZcode: (edition: string, modelIds?: string[]) =>
     request<{ path: string; created: boolean; providerId: string; modelCount: number; models: number }>("/zcode/apply", {
       method: "POST",
-      body: JSON.stringify({ edition }),
+      body: JSON.stringify({ edition, modelIds }),
     }),
   removeZcode: (edition: string) =>
     request<{ path: string; removed: boolean }>("/zcode/remove", {

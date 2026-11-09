@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
 import {
-  Activity, ArrowDownToLine, ArrowUpFromLine, BarChart3, CalendarClock, CalendarDays, CalendarRange, Infinity, RefreshCw,
-  ServerCog, TriangleAlert, Zap,
+  Activity, ArrowDownToLine, ArrowUpFromLine, BarChart3, RefreshCw, ServerCog, TriangleAlert,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip as RTooltip,
-  XAxis, YAxis,
+  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart,
+  ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis,
 } from "recharts";
 
+import { ActivityHeatmap } from "@/components/activity-heatmap";
 import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
 import { Segmented } from "@/components/segmented";
@@ -40,11 +40,6 @@ function fmt(n: number): string {
   return String(n);
 }
 
-/** 完整的千分位写法，用于悬停提示 */
-function exact(n: number): string {
-  return n.toLocaleString("zh-CN");
-}
-
 const tooltipStyle = {
   background: "var(--popover)",
   border: "1px solid var(--border)",
@@ -53,15 +48,6 @@ const tooltipStyle = {
   color: "var(--popover-foreground)",
   boxShadow: "0 12px 32px -12px oklch(0.2 0.02 255 / 30%)",
 };
-
-/** 消耗窗口的展示顺序与文案 */
-const WINDOWS = [
-  { key: "today" as const, label: "今日消耗", icon: Zap },
-  { key: "d7" as const, label: "近 7 日", icon: CalendarDays },
-  { key: "d15" as const, label: "近 15 日", icon: CalendarRange },
-  { key: "d30" as const, label: "近 30 日", icon: CalendarClock },
-  { key: "all" as const, label: "总消耗", icon: Infinity },
-];
 
 /** Token 统计：趋势图 + 按账号 / 模型 / API 分布 */
 export default function TokenStatsPage() {
@@ -155,57 +141,43 @@ export default function TokenStatsPage() {
         />
       ) : (
         <div className="space-y-5">
-          {/* 时间窗口消耗：今日 / 7 / 15 / 30 日 / 总消耗
-              数据来自按天汇总，不受明细 5000 条上限影响 */}
+          {/* 活动回澜：热力图 + 概览数字
+              和消耗窗口同源（按天汇总），因此不受明细 5000 条上限影响 */}
           <Card>
             <CardHeader className="flex-row items-center justify-between">
               <div>
-                <CardTitle className="text-[13px]">消耗窗口</CardTitle>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  按自然日统计的 Token 消耗，今日含此刻为止的全部请求。
-                </p>
+                <CardTitle className="text-[13px]">工作回澜</CardTitle>
+                <p className="mt-1 text-[11px] text-muted-foreground">近一年每日 Token 消耗</p>
               </div>
-              <Badge variant="outline" className="h-6 text-[10.5px] font-normal">
-                累计 {fmt(usage.windows.all.totalTokens)}
+              <Badge variant="outline" className="h-6 shrink-0 text-[10.5px] font-normal">
+                {usage.activity.activeDays} 天有活动 · {fmt(usage.activity.totalRequests)} 次请求
               </Badge>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-2 gap-2.5 sm:gap-3 xl:grid-cols-5">
-                {WINDOWS.map((w) => {
-                  const bucket = usage.windows[w.key];
-                  const share = usage.windows.all.totalTokens
-                    ? (bucket.totalTokens / usage.windows.all.totalTokens) * 100
-                    : 0;
-                  return (
-                    <div
-                      key={w.key}
-                      className="relative overflow-hidden rounded-xl border border-border/75 bg-muted/15 px-3 py-3"
-                      title={`${exact(bucket.totalTokens)} tokens · ${bucket.requests} 次请求`}
-                    >
-                      <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-                        <w.icon className="size-3.5" strokeWidth={1.9} />
-                        {w.label}
-                      </div>
-                      <div className="mt-2 font-display text-[19px] font-semibold leading-none tracking-[-0.02em] tabular-nums">
-                        {fmt(bucket.totalTokens)}
-                      </div>
-                      <div className="mt-1.5 flex items-center justify-between text-[10px] text-muted-foreground">
-                        <span className="tabular-nums">{bucket.requests.toLocaleString()} 次</span>
-                        <span className="tabular-nums">
-                          {w.key === "all" ? "100%" : `${share.toFixed(share >= 10 ? 0 : 1)}%`}
-                        </span>
-                      </div>
-                      {w.key !== "all" ? (
-                        <div aria-hidden="true" className="mt-2 h-1 overflow-hidden rounded-full bg-border/60">
-                          <div
-                            className="h-full rounded-full bg-primary/70"
-                            style={{ width: `${Math.min(100, share)}%` }}
-                          />
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
+              <div className="flex flex-col gap-5 xl:flex-row xl:items-start">
+                <div className="min-w-0 flex-1">
+                  <ActivityHeatmap data={usage.heatmap} />
+                  <p className="mt-2 text-[10.5px] text-muted-foreground">
+                    近一年 {fmt(usage.activity.totalTokens)} tokens
+                  </p>
+                </div>
+                <div className="grid shrink-0 grid-cols-2 gap-x-8 gap-y-4 xl:w-64">
+                  <ActivityStat label="有活动" value={`${usage.activity.activeDays}`} unit="天" />
+                  <ActivityStat label="总请求" value={fmt(usage.activity.totalRequests)} />
+                  <ActivityStat label="总 Token" value={fmt(usage.activity.totalTokens)} />
+                  <ActivityStat
+                    label="峰值单日"
+                    value={usage.activity.peakDay ? fmt(usage.activity.peakTokens) : "—"}
+                    hint={usage.activity.peakDay ? usage.activity.peakDay.slice(5) : undefined}
+                  />
+                  <ActivityStat
+                    label="当前连续"
+                    value={`${usage.activity.currentStreak}`}
+                    unit="天"
+                    hint={usage.activity.currentStreak === 0 ? "今天还没有请求" : undefined}
+                  />
+                  <ActivityStat label="最长连续" value={`${usage.activity.longestStreak}`} unit="天" />
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -243,36 +215,67 @@ export default function TokenStatsPage() {
           <Card>
             <CardHeader className="flex-row items-center justify-between">
               <div>
-                <CardTitle className="text-[13px]">每日趋势</CardTitle>
-                <p className="mt-1 text-[11px] text-muted-foreground">近 30 日的输入与输出 Token 消耗（按自然日汇总）。</p>
+                <CardTitle className="text-[13px]">每日 Token 趋势</CardTitle>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  近 30 日各模型消耗；某天没用某个模型时折线断开。
+                </p>
               </div>
               <Badge variant="outline" className="h-6 text-[10.5px] font-normal">
-                {daily.length} 天
+                {usage.modelDaily.series.length} 个模型
               </Badge>
             </CardHeader>
             <CardContent>
               <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={daily} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="gIn" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="var(--data-series-sky)" stopOpacity={0.28} />
-                        <stop offset="100%" stopColor="var(--data-series-sky)" stopOpacity={0.01} />
-                      </linearGradient>
-                      <linearGradient id="gOut" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="var(--data-series-emerald)" stopOpacity={0.3} />
-                        <stop offset="100%" stopColor="var(--data-series-emerald)" stopOpacity={0.01} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                    <XAxis dataKey="day" tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} tickLine={false} axisLine={false} tickFormatter={(v: string) => v.slice(5)} />
-                    <YAxis tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} tickLine={false} axisLine={false} tickFormatter={fmt} width={44} />
-                    <RTooltip contentStyle={tooltipStyle} labelStyle={{ color: "var(--muted-foreground)", fontSize: 10 }} />
-                    <Legend wrapperStyle={{ fontSize: 11 }} iconType="circle" iconSize={7} />
-                    <Area type="monotone" dataKey="promptTokens" name="输入 Token" stroke="var(--data-series-sky)" fill="url(#gIn)" strokeWidth={2} isAnimationActive={false} />
-                    <Area type="monotone" dataKey="completionTokens" name="输出 Token" stroke="var(--data-series-emerald)" fill="url(#gOut)" strokeWidth={2} isAnimationActive={false} />
-                  </AreaChart>
-                </ResponsiveContainer>
+                {usage.modelDaily.series.length === 0 ? (
+                  <div className="flex h-full items-center justify-center text-[11.5px] text-muted-foreground">
+                    近 30 日还没有按模型的记录
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart
+                      data={usage.modelDaily.days.map((day, i) => {
+                        const row: Record<string, string | number | null> = { day };
+                        for (const s of usage.modelDaily.series) row[s.label] = s.values[i];
+                        return row;
+                      })}
+                      margin={{ left: 0, right: 8, top: 4, bottom: 0 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                      <XAxis
+                        dataKey="day"
+                        tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
+                        tickLine={false}
+                        axisLine={false}
+                        tickFormatter={(v: string) => v.slice(5)}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
+                        tickLine={false}
+                        axisLine={false}
+                        tickFormatter={fmt}
+                        width={44}
+                      />
+                      <RTooltip
+                        contentStyle={tooltipStyle}
+                        labelStyle={{ color: "var(--muted-foreground)", fontSize: 10 }}
+                        formatter={(value) => (value == null ? "—" : fmt(Number(value)))}
+                      />
+                      <Legend wrapperStyle={{ fontSize: 10.5 }} iconType="circle" iconSize={7} />
+                      {usage.modelDaily.series.map((s, i) => (
+                        <Line
+                          key={s.name}
+                          type="monotone"
+                          dataKey={s.label}
+                          stroke={SERIES[i % SERIES.length]}
+                          strokeWidth={2}
+                          dot={false}
+                          connectNulls={false}
+                          isAnimationActive={false}
+                        />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -403,6 +406,32 @@ export default function TokenStatsPage() {
           </Card>
         </div>
       )}
+    </div>
+  );
+}
+
+/** 活动概览里的单个数字（大号数值 + 标签 + 可选补充说明） */
+function ActivityStat({
+  label,
+  value,
+  unit,
+  hint,
+}: {
+  label: string;
+  value: string;
+  unit?: string;
+  hint?: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="flex items-baseline gap-1">
+        <span className="font-display text-[19px] font-semibold leading-none tracking-[-0.02em] tabular-nums">
+          {value}
+        </span>
+        {unit ? <span className="text-[11px] text-muted-foreground">{unit}</span> : null}
+      </div>
+      <div className="mt-1 text-[10.5px] text-muted-foreground">{label}</div>
+      {hint ? <div className="mt-0.5 text-[9.5px] text-muted-foreground/70">{hint}</div> : null}
     </div>
   );
 }

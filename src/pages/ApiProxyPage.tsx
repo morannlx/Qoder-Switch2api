@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
-  Activity, Check, Copy, Eye, EyeOff, Gauge, Globe2, Info, KeyRound, ListPlus, Loader2, Network, Plug, RefreshCw, Save,
+  Activity, Check, Copy, Eye, EyeOff, Gauge, Globe2, Image as ImageIcon, Info, KeyRound, ListPlus, Loader2, Network, Plug, RefreshCw, Save,
   ServerCog, Trash2, TriangleAlert, Users,
 } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import * as api from "@/lib/api";
-import { accountGroupLabel, type Edition, type ProxyConfig, type ProxyStatus, type UsageStats, type ZcodeStatus } from "@/lib/types";
+import { accountGroupLabel, type Edition, type ProxyConfig, type ProxyStatus, type UsageStats, type ZcodeModelOption, type ZcodeStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** 反代配置页：每个版本一套独立配置 */
@@ -39,6 +39,17 @@ export default function ApiProxyPage({ edition }: { edition: Edition }) {
   const [showApiKey, setShowApiKey] = useState(false);
   const [zcode, setZcode] = useState<ZcodeStatus | null>(null);
   const [zcodeBusy, setZcodeBusy] = useState(false);
+  const [catalog, setCatalog] = useState<ZcodeModelOption[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [selectedModels, setSelectedModels] = useState<string[]>([]);
+
+  // 全选状态：true=全选，false=全不选，null=混合（部分选中）
+  const selectAll: boolean | null = useMemo(() => {
+    if (catalog.length === 0) return null;
+    if (selectedModels.length === 0) return false;
+    if (selectedModels.length === catalog.length) return true;
+    return null;
+  }, [catalog, selectedModels]);
 
   const isDomestic = edition === "domestic";
   const label = isDomestic ? "国内版" : "国际版";
@@ -67,6 +78,19 @@ export default function ApiProxyPage({ edition }: { edition: Edition }) {
         if (!cancelled && usageRes) setUsage(usageRes);
         const zcodeRes = await api.api.getZcodeStatus(edition).catch(() => null);
         if (!cancelled) setZcode(zcodeRes);
+        // 获取模型清单（首次加载时）
+        if (!catalog.length && !catalogLoading) {
+          try {
+            const modelsRes = await api.api.getZcodeModels(edition);
+            if (!cancelled) {
+              setCatalog(modelsRes.models);
+              // 默认全选
+              setSelectedModels(modelsRes.models.map((m) => m.id));
+            }
+          } catch (e) {
+            console.warn("获取 ZCode 模型清单失败", e);
+          }
+        }
       } catch (e) {
         if (!cancelled) {
           setLoadError(api.asError(e));
@@ -123,21 +147,6 @@ export default function ApiProxyPage({ edition }: { edition: Edition }) {
     }
   }
 
-  async function applyZcode() {
-    setZcodeBusy(true);
-    try {
-      const res = await api.api.applyZcode(edition);
-      toast.success(res.created ? "已创建 ZCode 配置" : "已写入 ZCode 配置", {
-        description: `${res.modelCount} 个模型（含上下文窗口），provider ${res.providerId}。现在可以启动 ZCode 了。`,
-      });
-      setZcode(await api.api.getZcodeStatus(edition));
-    } catch (e) {
-      toast.error("接入 ZCode 失败", { description: api.asError(e) });
-    } finally {
-      setZcodeBusy(false);
-    }
-  }
-
   async function removeZcode() {
     setZcodeBusy(true);
     try {
@@ -151,7 +160,47 @@ export default function ApiProxyPage({ edition }: { edition: Edition }) {
     }
   }
 
-  async function copyText(text: string, key: string) {    try {
+  // 全选 / 全不选 / 反选
+  function toggleModel(id: string, checked: boolean) {
+    setSelectedModels((prev) =>
+      checked ? [...prev, id] : prev.filter((m) => m !== id),
+    );
+  }
+
+  function setSelectAll(value: boolean) {
+    setSelectedModels(value ? catalog.map((m) => m.id) : []);
+  }
+
+  function setInvertSelection() {
+    setSelectedModels((prev) => {
+      const allIds = catalog.map((m) => m.id);
+      return allIds.filter((id) => !prev.includes(id));
+    });
+  }
+
+  async function applyZcode(modelIds?: string[]) {
+    setZcodeBusy(true);
+    const idsToApply = modelIds ?? selectedModels;
+    if (!idsToApply || idsToApply.length === 0) {
+      toast.error("请先勾选要导入的模型");
+      setZcodeBusy(false);
+      return;
+    }
+    try {
+      const res = await api.api.applyZcode(edition, idsToApply);
+      toast.success(res.created ? "已创建 ZCode 配置" : "已写入 ZCode 配置", {
+        description: `${res.modelCount} 个模型（含上下文窗口），provider ${res.providerId}。现在可以启动 ZCode 了。`,
+      });
+      setZcode(await api.api.getZcodeStatus(edition));
+    } catch (e) {
+      toast.error("接入 ZCode 失败", { description: api.asError(e) });
+    } finally {
+      setZcodeBusy(false);
+    }
+  }
+
+  async function copyText(text: string, key: string) {
+    try {
       await navigator.clipboard.writeText(text);
       setCopied(key);
       setTimeout(() => setCopied(""), 2000);
@@ -478,7 +527,7 @@ export default function ApiProxyPage({ edition }: { edition: Edition }) {
                       )}
                     </h3>
                     <p className="mt-0.5 text-[11px] text-muted-foreground">
-                      写入 ZCode 的 provider 配置，并把每个模型的上下文窗口一并声明 —— 少了窗口，ZCode 的上下文条会按默认 2e5 显示。
+                      勾选要导入的模型，然后写入 ZCode 配置并声明每个模型的上下文窗口。
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
@@ -494,12 +543,14 @@ export default function ApiProxyPage({ edition }: { edition: Edition }) {
                         移除
                       </Button>
                     ) : null}
-                    <Button size="sm" variant="outline" className="h-8" onClick={() => void applyZcode()} disabled={zcodeBusy || !enabled}>
+                    <Button size="sm" variant="outline" className="h-8" onClick={() => void applyZcode(selectedModels)} disabled={zcodeBusy || !enabled}>
                       {zcodeBusy ? <Loader2 className="animate-spin" /> : <Plug />}
                       {zcode.applied ? "重新写入" : "接入 ZCode"}
                     </Button>
                   </div>
                 </div>
+
+                {/* 模型选择列表 */}
                 <div className="space-y-2.5 px-5 py-4">
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted-foreground">
                     <span className="inline-flex items-center gap-1">
@@ -507,12 +558,13 @@ export default function ApiProxyPage({ edition }: { edition: Edition }) {
                       <span className="font-mono text-foreground/80">{zcode.baseUrl || zcode.wantedBaseUrl}</span>
                     </span>
                     <span>
-                      模型 <span className="font-medium text-foreground/80">{zcode.modelCount}</span> 个
+                      可选模型 <span className="font-medium text-foreground/80">{zcode.modelCount}</span> 个
                     </span>
                     {zcode.providerId ? (
                       <span className="font-mono text-[10.5px] text-muted-foreground/70">{zcode.providerId}</span>
                     ) : null}
                   </div>
+
                   {zcode.applied && zcode.baseUrl && zcode.baseUrl !== zcode.wantedBaseUrl ? (
                     <Alert className="border-amber-500/40 bg-amber-500/5 py-2">
                       <TriangleAlert className="text-amber-600" />
@@ -523,18 +575,62 @@ export default function ApiProxyPage({ edition }: { edition: Edition }) {
                       </AlertDescription>
                     </Alert>
                   ) : null}
-                  {zcode.models.length > 0 ? (
-                    <div className="flex flex-wrap gap-1.5">
-                      {zcode.models.map((m) => (
-                        <Badge key={m.id} variant="secondary" className="h-6 gap-1 px-1.5 font-mono text-[10px] font-normal">
-                          {m.id}
-                          <span className={cn("font-sans", m.contextWindow ? "text-muted-foreground" : "text-amber-600")}>
-                            {m.contextWindow ? formatTokens(m.contextWindow) : "无窗口"}
-                          </span>
-                        </Badge>
-                      ))}
-                    </div>
-                  ) : null}
+
+                  {/* 全选 / 全不选 / 反选 */}
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant="ghost" className="h-7 text-[10.5px]" onClick={() => setSelectAll(true)}>
+                      全选
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-7 text-[10.5px]" onClick={() => setSelectAll(false)}>
+                      全不选
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-7 text-[10.5px]" onClick={() => setInvertSelection()}>
+                      反选
+                    </Button>
+                    <span className="ml-auto text-[10.5px] text-muted-foreground">
+                      已选 <span className="font-medium text-foreground/80">{selectedModels.length}</span> 个
+                    </span>
+                  </div>
+
+                  {/* 模型清单 */}
+                  <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+                    {catalog.map((m) => {
+                      const checked = selectedModels.includes(m.id);
+                      return (
+                        <label
+                          key={m.id}
+                          className={cn(
+                            "flex items-start gap-2 rounded-lg border border-border/70 bg-card p-2.5 transition-colors hover:bg-muted/25",
+                            checked ? "bg-primary/5 border-primary/30" : "",
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => toggleModel(m.id, e.target.checked)}
+                            className="mt-0.5 size-4 rounded border-border/70 bg-background text-primary focus:ring-2 focus:ring-primary/50"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="truncate font-mono text-[11px] font-medium tabular-nums">
+                                {m.label}
+                              </span>
+                              {m.vision && <ImageIcon className="size-3.5 text-muted-foreground" />}
+                              {m.reasoning && <Activity className="size-3.5 text-muted-foreground" />}
+                            </div>
+                            <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
+                              <span>{formatTokens(m.contextWindow)}</span>
+                              <span className="text-muted-foreground/60">|</span>
+                              <span>{m.maxOutput.toLocaleString()} max</span>
+                              {m.vision && <span className="text-muted-foreground/60">· 图像</span>}
+                              {m.reasoning && <span className="text-muted-foreground/60">· 推理</span>}
+                            </div>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+
                   <p className="text-[10.5px] leading-relaxed text-muted-foreground/75">
                     写入前请完全退出 ZCode —— 它运行时会重写这份配置，覆盖本次改动。路径
                     <span className="ml-1 font-mono">{zcode.path}</span>

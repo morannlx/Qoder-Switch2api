@@ -307,6 +307,37 @@ fn resolve_model_request(raw: &str) -> (String, Option<String>) {
     (value.to_string(), None)
 }
 
+/// 统计口径的模型归并键（供 usage 聚合用）。
+///
+/// 用户可能用 `deepseek-flash`、`DeepSeek-Flash` 或 `dfmodel` 指同一个模型，
+/// 按原始字符串分组会在统计里裂成好几条。这里统一解析成上游 key 作为分组键。
+pub fn stats_model_key(raw: &str) -> String {
+    resolve_model_request(raw).0
+}
+
+/// 上游 key → 展示名，供统计里显示可读名字（解析不出时原样返回）
+pub fn stats_model_label(key: &str) -> String {
+    match key {
+        "auto" => "Auto",
+        "lite" => "Lite",
+        "qmodel_38max" => "Qwen3.8-Max",
+        "qfmodel" => "Qwen3.8-Flash",
+        "qmodel_latest" => "Qwen3.7-Max",
+        "qmodel" => "Qwen3.7-Plus",
+        "q37fmodel" => "Qwen3.7-Flash",
+        "dmodel" => "DeepSeek-V4-Pro",
+        "dfmodel" => "DeepSeek-Flash",
+        "gmodel" => "GLM-5.3",
+        "gfmodel" => "GLM-5.3-Flash",
+        "gm51model" => "GLM-5.2",
+        "kmodel_latest" => "Kimi-K3",
+        "kmodel" => "Kimi-K2.8",
+        "mmodel" => "MiniMax",
+        other => other,
+    }
+    .to_string()
+}
+
 /// 带轮转和重试的上游调用
 async fn run_with_account(
     state: &Arc<AppState>,

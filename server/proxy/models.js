@@ -110,3 +110,35 @@ export async function modelCatalogForProxy(edition, config, opts = {}) {
   }
   return models;
 }
+
+/** 上游 key → 展示名的反查表（按别名表建立），用于统计里把同一模型合并显示 */
+const DISPLAY_NAMES = new Map(Object.entries({
+  auto: "Auto",
+  lite: "Lite",
+  qmodel_38max: "Qwen3.8-Max",
+  qfmodel: "Qwen3.8-Flash",
+  qmodel_latest: "Qwen3.7-Max",
+  qmodel: "Qwen3.7-Plus",
+  q37fmodel: "Qwen3.7-Flash",
+  dmodel: "DeepSeek-V4-Pro",
+  dfmodel: "DeepSeek-Flash",
+  gmodel: "GLM-5.3",
+  gfmodel: "GLM-5.3-Flash",
+  gm51model: "GLM-5.2",
+  kmodel_latest: "Kimi-K3",
+  kmodel: "Kimi-K2.8",
+  mmodel: "MiniMax",
+}));
+
+/**
+ * 统计口径的模型归并键。
+ *
+ * 用户可能用 `deepseek-flash`、`DeepSeek-Flash` 或 `dfmodel` 指同一个模型，
+ * 按原始字符串分组会在统计里裂成好几条。这里统一解析成上游 key 作为分组键，
+ * 并给出可读的展示名（解析不出时原样返回）。
+ */
+export function modelStatsKey(raw) {
+  const value = String(raw || "").trim() || "auto";
+  const { key } = resolveModelRequest(value);
+  return { key, label: DISPLAY_NAMES.get(key) || key };
+}

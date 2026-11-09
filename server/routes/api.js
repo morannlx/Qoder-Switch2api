@@ -12,7 +12,7 @@ import * as sessions from "../sessions.js";
 import { resolveClientDir } from "../paths.js";
 import { usageStats } from "../proxy/usage.js";
 import { modelCatalogForProxy } from "../proxy/models.js";
-import { applyZcode, removeZcode, zcodeStatus, zcodeRunning } from "../zcode.js";
+import { applyZcode, removeZcode, zcodeStatus, zcodeRunning, zcodeModelOption } from "../zcode.js";
 import { loadJson, saveJson, appendJsonl, readJsonl } from "../store.js";
 import { randomId } from "../crypto.js";
 import { APP_NAME, APP_VERSION } from "../version.js";
@@ -488,6 +488,29 @@ export function createApiRouter({ getSettings, getProxyStatus, refreshProxyServe
     });
   });
 
+  /**
+   * 接入前先看有哪些模型可选。
+   * 返回的是「将写进 ZCode 的形态」：id 用网关认的拼写、带上下文窗口与能力标记，
+   * 让用户在勾选时就明白每个模型会以什么名字、什么窗口出现在 ZCode 里。
+   */
+  router.get("/zcode/models", async (req, res) => {
+    const settings = getSettings();
+    const editionValue = req.query.edition === "international" ? "international" : "domestic";
+    const config = settings.proxy?.[editionValue] || {};
+    if (!config.enabled) return res.status(409).json({ error: "该档位反代未启用，请先开启反代" });
+    try {
+      const catalog = await proxyModelCatalog(editionValue, config);
+      res.json({
+        models: catalog.map((m) => zcodeModelOption(m)),
+        edition: editionValue,
+        // 上游不可达时只有内置的 auto/lite
+        upstreamOk: catalog.length > 2,
+      });
+    } catch (e) {
+      res.status(502).json({ error: String(e.message || e) });
+    }
+  });
+
   router.post("/zcode/apply", async (req, res) => {
     const settings = getSettings();
     const editionValue = req.body?.edition === "international" ? "international" : "domestic";
@@ -498,7 +521,15 @@ export function createApiRouter({ getSettings, getProxyStatus, refreshProxyServe
     }
     // 模型必须来自同一份 /v1/models 宣告：ZCode 的模型清单与上下文窗口
     // 都按这里写进去，端口/档位换掉时要一起刷新
-    const models = await proxyModelCatalog(editionValue, config);
+    const catalog = await proxyModelCatalog(editionValue, config);
+    const requested = Array.isArray(req.body?.modelIds) ? req.body.modelIds.map(String) : null;
+    // 只导入用户勾选的模型；没传 modelIds 时全量导入（兼容旧的直接调用）
+    const models = requested
+      ? catalog.filter((m) => requested.includes(zcodeModelOption(m).id))
+      : catalog;
+    if (requested && models.length === 0) {
+      return res.status(400).json({ error: "没有选中任何可用模型：请先获取模型列表再勾选" });
+    }
     try {
       const result = applyZcode({
         baseUrl: proxyBaseUrl(config, editionValue),
