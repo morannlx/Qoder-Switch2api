@@ -46,7 +46,8 @@ Qoder（**国内版 Qoder CN / 国际版 Qoder**）多账号切换 + OpenAI / An
 | 账号添加 | ① OAuth 设备流登录（PKCE S256，自动打开浏览器 + 轮询授权）② 导入本机客户端登录态 ③ 手动添加 PAT / IDE token ④ 备份文件导入 |
 | 备份与迁移 | 导出账号 JSON，可选包含完整登录态；导入后可直接用于反代，也可只迁移账号信息 |
 | 账号切换 | 把目标账号写入 Qoder 客户端登录态（新版 `auth.v1.dat` / 旧版 `state.vscdb`）并重启客户端；切换前自动备份，四步进度反馈 |
-| OpenAI / Anthropic 反代 | 账号池轮转（额度优先 + round-robin）、失败冷却 120s、401/403 自动续期换号、按档位独立监听 |
+| OpenAI / Anthropic 反代 | 账号池轮转（额度优先 + round-robin）、失败冷却 120s、401/403 自动续期换号、按档位独立监听；流式 usage 与缓存命中完整下发 |
+| ZCode 一键接入 | 写 `~/.zcode/v2/provider_config.json`（provider 规则 + 每模型 `contextWindow` + 模型清单），上下文条、缓存命中率与模型菜单一次配好；复用既有 provider 与模型条目，不打断已有选择 |
 | 积分与签到 | Credits 额度 / 套餐 / 到期监控；campaigns 每日签到（批量 + 自动定时，幂等） |
 | Token 统计 | 请求数、输入/输出 Token 趋势图（Recharts），按账号 / 模型 / API 分布，落盘可查 |
 | 会话管理 | 发现本机工作区与聊天历史（`lingma.chat.localHistory.*`），导出 JSON / Markdown |
@@ -91,6 +92,9 @@ Rust 版内置同一 Web 服务（127.0.0.1:8787，/api/* + 嵌入式前端）�
 1. **账号管理** → 「OAuth 登录」或「导入本机账号」（自动读取本机已安装的 Qoder 客户端登录态）
 2. **API 反代** → 打开「启用国内版接口」，监听地址默认 `127.0.0.1:7891`
 3. 客户端接入：`http://127.0.0.1:7891/v1`（OpenAI 兼容）；Codex CLI 用 `/v1/responses`；Claude Code CLI 设 `ANTHROPIC_BASE_URL=http://127.0.0.1:7891`
+4. **ZCode**：反代页「ZCode 客户端」卡片点「接入 ZCode」（或先退出 ZCode 后执行 `npm run zcode`）。
+   它会写入 provider 规则与每个模型的上下文窗口——少了窗口，ZCode 的上下文条会按默认 2e5 显示。
+   接入前必须完全退出 ZCode，它运行时会重写 `~/.zcode/v2/provider_config.json`。
 
 反代端口可在页面修改；API Key 可留空（任意 Key 可用）或设置后要求 `Authorization: Bearer <key>`。
 监听端口被占用时，反代页会直接显示失败原因，修改端口后保存即可重试。
@@ -129,7 +133,10 @@ Rust 版内置同一 Web 服务（127.0.0.1:8787，/api/* + 嵌入式前端）�
 │   │   └── info.js          # 额度/套餐/签到/模型列表
 │   ├── proxy/
 │   │   ├── gateway.js       # OpenAI/Anthropic 兼容网关（每档位一实例）
+│   │   ├── models.js        # 模型别名解析 + /v1/models 目录（与 ZCode 接入同源）
 │   │   └── usage.js         # 用量统计
+│   ├── zcode.js             # ZCode 接入：provider 规则 + 每模型 contextWindow
+│   ├── __tests__/           # ZCode 接入与 usage 契约回归测试（npm test）
 │   └── routes/api.js        # WebUI REST API
 ├── src/                     # React 前端
 │   ├── App.tsx              # 布局 + 路由（左侧导航，双版本入口）
@@ -137,7 +144,10 @@ Rust 版内置同一 Web 服务（127.0.0.1:8787，/api/* + 嵌入式前端）�
 │   ├── components/          # 账号卡片、OAuth/切换/添加/备份对话框
 │   └── lib/                 # API 客户端、类型、主题
 ├── docs/API-PROXY.md        # Qoder 协议与反代实现细节
-└── scripts/smoke-ssr.mjs    # SSR 冒烟测试（npm run smoke）
+├── scripts/
+│   ├── smoke-ssr.mjs        # SSR 冒烟测试（npm run smoke）
+│   ├── proto-check.mjs      # 反代协议契约自检（npm run test:proxy）
+│   └── zcode-apply.mjs      # 命令行接入 ZCode（npm run zcode）
 ```
 
 ## 数据与凭证存放
@@ -172,8 +182,38 @@ Cloud Agents 文档。个别未公开字段（如 CN 版 OAuth client_id）标�
 - macOS / Linux 的客户端登录态加密密钥在系统钥匙串中，暂不支持自动读写（可 OAuth 登录 / 手动添加账号，反代功能不受影响）。
 - `request_set_id` 字段实测会导致国内版网关挂起，已从请求体中移除（见 docs/API-PROXY.md）。
 - 国际版 legacy 流式端点（api3.qoder.sh）按 qoder2api 移植，未持国际版账号实测。
+- ZCode 的上下文条依赖两个来源：每次请求的 usage（网关已下发）与本地模型配置里的
+  `contextWindow`（接入时写入）。**改过反代端口后要重新接入一次**，否则 ZCode 仍指向旧地址。
+- 不在上游模型目录里的模型（用户手动添加的额外模型，如 `qoduck`）无法得知真实窗口，
+  接入时不会被写入 `contextWindow`；这类模型在 ZCode 里会按默认 2e5 显示上下文条。
 
 ## 更新日志
+
+### v1.1.31
+
+ZCode 适配：把「上下文条不显示」这件事从协议层到客户端配置一次修齐。ZCode 的上下文条由
+`contextUsed / contextWindow` 算出，前者只来自每次请求的 usage，后者只来自本地 provider 配置；
+两者缺任何一个都不会显示，缺窗口时会按默认 2e5 显示（与实际窗口不符）。
+
+- 修复流式请求丢 usage：`/v1/chat/completions` 之前收集了 usage 却从不发出。现在按 OpenAI 的
+  `include_usage` 契约在 finish 帧之后、`[DONE]` 之前补一帧 `choices: []` 的 usage 块 ——
+  ZCode / Cherry Studio / LobeChat 都只认这一帧，挂在带 choices 的块上会被直接丢弃
+- 修复 `/v1/messages` 假流式：原先等上游整段生成完再一次性吐块，首字延迟等于整段生成时间。
+  现在边收边发，thinking → text → tool_use 按序开闭，每个块都有配对的 `content_block_stop`
+- 缓存命中数不再丢失：`cachedTokens` 写进 `prompt_tokens_details.cached_tokens` 及
+  `cache_read_input_tokens` / `cached_tokens` 别名，上下文条与命中率才有数
+- Anthropic usage 语义修正：`input_tokens` 改为**未命中缓存**部分，客户端按
+  `input + cache_read + cache_creation` 相加才是整段上下文；照抄上游 OpenAI 口径会让上下文看起来翻倍
+- `/v1/responses` 补 `input_tokens_details.cached_tokens` 与 `output_tokens_details.reasoning_tokens`
+- `/v1/models` 补上下文窗口与能力元数据：`context_length` / `max_input_tokens` / `limit.context` /
+  `capabilities` / `input_modalities` 等多种拼写同时给出，客户端读哪种都能拿到 180000
+- 新增 **ZCode 一键接入**（反代页新卡片）：写入 `~/.zcode/v2/provider_config.json` 的 provider 规则
+  与**每个模型的 `properties.contextWindow`**；按稳定 providerId 定位，重复写入不堆叠，其他 provider、
+  顺序与模型规则逐字保留；同 baseUrl 的既有 provider（如用户手动加的）会被复用而不是新建一条
+- ZCode 接入复用用户已有的模型条目（`qwen3.8-flash` 与网关的 `qfmodel` 视为同一模型），
+  只补窗口，不改变他的模型选择与历史记录
+- ZCode 运行时会重写这份配置，因此写入前检测进程并拒绝（提示先退出 ZCode）
+- Node / Rust 双后端同步上述协议修复
 
 ### v1.1.30
 

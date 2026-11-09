@@ -2,7 +2,7 @@
 
 import type {
   Account, AppStatus, AutoCheckinStatus, BackupResult, KeepaliveStatus, ChatItem, CheckinResult, CheckinState, ClientInfo, PlanInfo, ProxyConfig, QuotaInfo,
-  Settings, UpdateDownloadStatus, UpdateInfo, UsageStats, Workspace,
+  Settings, UpdateDownloadStatus, UpdateInfo, UsageStats, Workspace, ZcodeStatus,
 } from "@/lib/types";
 
 const BASE = "/api";
@@ -108,6 +108,19 @@ export const api = {
       `/proxy/models?edition=${edition}`,
     ),
   getUsage: (edition?: string) => request<UsageStats>(`/usage${edition ? `?edition=${edition}` : ""}`),
+
+  /* ZCode 客户端接入 */
+  getZcodeStatus: (edition: string) => request<ZcodeStatus>(`/zcode/status?edition=${edition}`),
+  applyZcode: (edition: string) =>
+    request<{ path: string; created: boolean; providerId: string; modelCount: number; models: number }>("/zcode/apply", {
+      method: "POST",
+      body: JSON.stringify({ edition }),
+    }),
+  removeZcode: (edition: string) =>
+    request<{ path: string; removed: boolean }>("/zcode/remove", {
+      method: "POST",
+      body: JSON.stringify({ edition }),
+    }),
 
   /* 会话 */
   listWorkspaces: (edition: string) =>

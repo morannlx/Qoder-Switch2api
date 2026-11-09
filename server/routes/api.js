@@ -11,6 +11,8 @@ import * as switcher from "../switcher.js";
 import * as sessions from "../sessions.js";
 import { resolveClientDir } from "../paths.js";
 import { usageStats } from "../proxy/usage.js";
+import { modelCatalogForProxy } from "../proxy/models.js";
+import { applyZcode, removeZcode, zcodeStatus, zcodeRunning } from "../zcode.js";
 import { loadJson, saveJson, appendJsonl, readJsonl } from "../store.js";
 import { randomId } from "../crypto.js";
 import { APP_NAME, APP_VERSION } from "../version.js";
@@ -472,6 +474,58 @@ export function createApiRouter({ getSettings, getProxyStatus, refreshProxyServe
     res.json(usageStats(edition));
   });
 
+  /* ---------------- ZCode 客户端接入 ---------------- */
+  router.get("/zcode/status", (req, res) => {
+    const settings = getSettings();
+    const editionValue = req.query.edition === "international" ? "international" : "domestic";
+    const config = settings.proxy?.[editionValue] || {};
+    const wantedBaseUrl = proxyBaseUrl(config, editionValue);
+    res.json({
+      ...zcodeStatus({ baseUrl: wantedBaseUrl }),
+      wantedBaseUrl,
+      edition: editionValue,
+      enabled: Boolean(config.enabled),
+    });
+  });
+
+  router.post("/zcode/apply", async (req, res) => {
+    const settings = getSettings();
+    const editionValue = req.body?.edition === "international" ? "international" : "domestic";
+    const config = settings.proxy?.[editionValue] || {};
+    if (!config.enabled) return res.status(409).json({ error: "该档位反代未启用，请先开启反代" });
+    if (await zcodeRunning()) {
+      return res.status(409).json({ error: "ZCode 正在运行：请先完全退出 ZCode 再接入，否则它下次保存会覆盖这次写入" });
+    }
+    // 模型必须来自同一份 /v1/models 宣告：ZCode 的模型清单与上下文窗口
+    // 都按这里写进去，端口/档位换掉时要一起刷新
+    const models = await proxyModelCatalog(editionValue, config);
+    try {
+      const result = applyZcode({
+        baseUrl: proxyBaseUrl(config, editionValue),
+        apiKey: config.apiKey || "",
+        protocol: "openai-chat-completions",
+        models,
+      });
+      res.json({ ...result, models: models.length });
+    } catch (e) {
+      res.status(500).json({ error: String(e.message || e) });
+    }
+  });
+
+  router.post("/zcode/remove", async (req, res) => {
+    if (await zcodeRunning()) {
+      return res.status(409).json({ error: "ZCode 正在运行：请先完全退出 ZCode 再改动其配置" });
+    }
+    const settings = getSettings();
+    const editionValue = req.body?.edition === "international" ? "international" : "domestic";
+    const config = settings.proxy?.[editionValue] || {};
+    try {
+      res.json(removeZcode({ baseUrl: proxyBaseUrl(config, editionValue) }));
+    } catch (e) {
+      res.status(500).json({ error: String(e.message || e) });
+    }
+  });
+
   /* ---------------- 会话管理 ---------------- */
   router.get("/sessions/workspaces", async (req, res) => {
     const editionValue = req.query.edition === "international" ? "international" : "domestic";
@@ -588,6 +642,26 @@ export function createApiRouter({ getSettings, getProxyStatus, refreshProxyServe
   });
 
   return router;
+}
+
+/** 该档位反代的对外地址（与网关监听地址一致） */
+function proxyBaseUrl(config, editionValue) {
+  const listen = String(config?.listen || (editionValue === "international" ? "127.0.0.1:7892" : "127.0.0.1:7891"));
+  // 监听 0.0.0.0 时对外仍用回环地址：ZCode 与网关同机
+  const hostPort = listen.replace(/^0\.0\.0\.0:/, "127.0.0.1:");
+  return `http://${hostPort}/v1`;
+}
+
+/**
+ * 接入 ZCode 用的模型目录：与 /v1/models 完全同源。
+ * 少了这一份，ZCode 里就是「模型能选但上下文窗口是默认 2e5」。
+ */
+async function proxyModelCatalog(editionValue, config) {
+  const edition = getEdition(editionValue);
+  return modelCatalogForProxy(edition, config, {
+    pickAccount: (value) => accountManager.pick(value),
+    fetchModelList: (ed, account) => info.fetchModelList(ed, account),
+  });
 }
 
 function sanitizeEndpoints(input) {

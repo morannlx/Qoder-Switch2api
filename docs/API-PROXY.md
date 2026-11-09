@@ -157,6 +157,39 @@ machine token/type 缺失时生成随机值（uuid 拼接后 base64url / 18B hex
   `~/.qoder-switch/usage.json`（保留最近 5000 条）。
 - 模型：`auto`（默认）/ `lite` / 透传上游 key；`/v1/models` 返回默认 + 上游（缓存 10min）+ 额外放行。
 
+### 6.1 流式帧契约（ZCode / Claude Code 真正依赖的部分）
+
+客户端**不从正文推断用量**，只认协议规定的收尾帧；帧形状错了，上下文条、命中率、计费全丢。
+
+| 端点 | 关键帧 | 说明 |
+|---|---|---|
+| `/v1/chat/completions` | `choices: []` + `usage` | OpenAI `include_usage` 契约：finish 帧之后、`[DONE]` 之前，**choices 必须为空**。挂在带 choices 的块上会被客户端丢弃 |
+| `/v1/messages` | `message_start` → `content_block_*` → `message_delta` → `message_stop` | 每块 start/stop 必须配对；thinking 在 text 之前关闭。`message_delta.usage` 带 `input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens` |
+| `/v1/responses` | `response.completed.response.usage` | `input_tokens_details.cached_tokens`、`output_tokens_details.reasoning_tokens` |
+
+**usage 语义差异（最容易写错的一处）**：
+
+- OpenAI 口径：`prompt_tokens` **含**缓存命中，命中数另放 `prompt_tokens_details.cached_tokens`。
+- Anthropic 口径：`input_tokens` 是**未命中**部分，客户端按 `input + cache_read + cache_creation`
+  相加才是整段上下文。把上游的 `prompt_tokens` 直接抄进 `input_tokens` 会让上下文看起来翻倍。
+
+上游（Qoder）只给 OpenAI 口径 + `prompt_tokens_details.cached_tokens`，因此 `/v1/messages` 侧要减去命中数。
+实测：同一段 3032 token 的上下文，两种协议相加后都是 3032（见 `scripts/proto-check.mjs`）。
+
+### 6.2 ZCode 接入
+
+ZCode 的上下文条由两个来源相除得出，缺一不可：
+
+- **分子** `contextUsed`：只来自每次请求的 usage（见 6.1）；
+- **分母** `contextWindow`：只来自本地 `~/.zcode/v2/provider_config.json` 里该模型的
+  `config.properties.contextWindow`，缺省回退 `2e5`。
+
+因此只把 provider 加进 ZCode 是不够的。`server/zcode.js` 一次写两处：
+`providerConfigRules.providerRules[]`（协议/地址/模型清单）与
+`modelConfigRules.providerModelRules[]`（每模型 `contextWindow` + `inputFormat.supportsImage`）。
+按稳定 providerId 定位、复用同 baseUrl 的既有 provider、按上游 key 匹配用户已有模型条目，
+保证重复写入不堆叠、不改动用户的模型选择与历史记录。
+
 ## 7. 会话管理
 
 - 工作区：`User/workspaceStorage/{id}/workspace.json` → `folder`（file:// URI）解码得路径。

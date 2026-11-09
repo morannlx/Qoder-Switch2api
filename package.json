@@ -1,7 +1,7 @@
 {
   "name": "qoder-switch2api",
   "private": true,
-  "version": "1.1.30",
+  "version": "1.1.31",
   "author": "qoder-switch2api",
   "license": "MIT",
   "type": "module",
@@ -18,7 +18,10 @@
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
     "desktop:installer": "tauri build --bundles nsis",
-    "icon": "node scripts/gen-icon.mjs public/icon-src.png && tauri icon public/icon-src.png --output src-tauri/icons"
+    "icon": "node scripts/gen-icon.mjs public/icon-src.png && tauri icon public/icon-src.png --output src-tauri/icons",
+    "test": "node --test server/__tests__/*.test.mjs",
+    "test:proxy": "node scripts/proto-check.mjs",
+    "zcode": "node scripts/zcode-apply.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",

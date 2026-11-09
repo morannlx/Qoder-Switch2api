@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
-  Activity, Check, Copy, Eye, EyeOff, Gauge, Globe2, Info, KeyRound, ListPlus, Loader2, Network, RefreshCw, Save,
+  Activity, Check, Copy, Eye, EyeOff, Gauge, Globe2, Info, KeyRound, ListPlus, Loader2, Network, Plug, RefreshCw, Save,
   ServerCog, Trash2, TriangleAlert, Users,
 } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import * as api from "@/lib/api";
-import { accountGroupLabel, type Edition, type ProxyConfig, type ProxyStatus, type UsageStats } from "@/lib/types";
+import { accountGroupLabel, type Edition, type ProxyConfig, type ProxyStatus, type UsageStats, type ZcodeStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** 反代配置页：每个版本一套独立配置 */
@@ -37,6 +37,8 @@ export default function ApiProxyPage({ edition }: { edition: Edition }) {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [copied, setCopied] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
+  const [zcode, setZcode] = useState<ZcodeStatus | null>(null);
+  const [zcodeBusy, setZcodeBusy] = useState(false);
 
   const isDomestic = edition === "domestic";
   const label = isDomestic ? "国内版" : "国际版";
@@ -63,6 +65,8 @@ export default function ApiProxyPage({ edition }: { edition: Edition }) {
         setOtherProxyAccounts(statusRes.editions[otherEdition].proxyAccounts);
         const usageRes = await api.api.getUsage(edition).catch(() => null);
         if (!cancelled && usageRes) setUsage(usageRes);
+        const zcodeRes = await api.api.getZcodeStatus(edition).catch(() => null);
+        if (!cancelled) setZcode(zcodeRes);
       } catch (e) {
         if (!cancelled) {
           setLoadError(api.asError(e));
@@ -119,8 +123,35 @@ export default function ApiProxyPage({ edition }: { edition: Edition }) {
     }
   }
 
-  async function copyText(text: string, key: string) {
+  async function applyZcode() {
+    setZcodeBusy(true);
     try {
+      const res = await api.api.applyZcode(edition);
+      toast.success(res.created ? "已创建 ZCode 配置" : "已写入 ZCode 配置", {
+        description: `${res.modelCount} 个模型（含上下文窗口），provider ${res.providerId}。现在可以启动 ZCode 了。`,
+      });
+      setZcode(await api.api.getZcodeStatus(edition));
+    } catch (e) {
+      toast.error("接入 ZCode 失败", { description: api.asError(e) });
+    } finally {
+      setZcodeBusy(false);
+    }
+  }
+
+  async function removeZcode() {
+    setZcodeBusy(true);
+    try {
+      const res = await api.api.removeZcode(edition);
+      toast.success(res.removed ? "已从 ZCode 配置移除" : "ZCode 配置里没有本网关");
+      setZcode(await api.api.getZcodeStatus(edition));
+    } catch (e) {
+      toast.error("移除失败", { description: api.asError(e) });
+    } finally {
+      setZcodeBusy(false);
+    }
+  }
+
+  async function copyText(text: string, key: string) {    try {
       await navigator.clipboard.writeText(text);
       setCopied(key);
       setTimeout(() => setCopied(""), 2000);
@@ -432,6 +463,87 @@ export default function ApiProxyPage({ edition }: { edition: Edition }) {
             </CardContent>
           </Card>
 
+          {/* ZCode 一键接入 */}
+          {zcode && zcode.installed ? (
+            <Card className="mb-5">
+              <CardContent className="p-0">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 px-5 py-4">
+                  <div className="min-w-0">
+                    <h3 className="flex items-center gap-1.5 text-[13px] font-semibold">
+                      ZCode 客户端
+                      {zcode.applied ? (
+                        <Badge variant="secondary" className="h-5 px-1.5 text-[10px] font-normal">已接入</Badge>
+                      ) : (
+                        <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-normal text-muted-foreground">未接入</Badge>
+                      )}
+                    </h3>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      写入 ZCode 的 provider 配置，并把每个模型的上下文窗口一并声明 —— 少了窗口，ZCode 的上下文条会按默认 2e5 显示。
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {zcode.applied ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-8 text-muted-foreground"
+                        onClick={() => void removeZcode()}
+                        disabled={zcodeBusy || !enabled}
+                      >
+                        {zcodeBusy ? <Loader2 className="animate-spin" /> : <Trash2 />}
+                        移除
+                      </Button>
+                    ) : null}
+                    <Button size="sm" variant="outline" className="h-8" onClick={() => void applyZcode()} disabled={zcodeBusy || !enabled}>
+                      {zcodeBusy ? <Loader2 className="animate-spin" /> : <Plug />}
+                      {zcode.applied ? "重新写入" : "接入 ZCode"}
+                    </Button>
+                  </div>
+                </div>
+                <div className="space-y-2.5 px-5 py-4">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted-foreground">
+                    <span className="inline-flex items-center gap-1">
+                      <Network className="size-3" />
+                      <span className="font-mono text-foreground/80">{zcode.baseUrl || zcode.wantedBaseUrl}</span>
+                    </span>
+                    <span>
+                      模型 <span className="font-medium text-foreground/80">{zcode.modelCount}</span> 个
+                    </span>
+                    {zcode.providerId ? (
+                      <span className="font-mono text-[10.5px] text-muted-foreground/70">{zcode.providerId}</span>
+                    ) : null}
+                  </div>
+                  {zcode.applied && zcode.baseUrl && zcode.baseUrl !== zcode.wantedBaseUrl ? (
+                    <Alert className="border-amber-500/40 bg-amber-500/5 py-2">
+                      <TriangleAlert className="text-amber-600" />
+                      <AlertTitle className="text-[12px]">接入地址已过期</AlertTitle>
+                      <AlertDescription className="text-[11px]">
+                        配置里写的是 <span className="font-mono">{zcode.baseUrl}</span>，当前反代监听
+                        <span className="font-mono"> {zcode.wantedBaseUrl}</span>。重新写入即可对齐。
+                      </AlertDescription>
+                    </Alert>
+                  ) : null}
+                  {zcode.models.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {zcode.models.map((m) => (
+                        <Badge key={m.id} variant="secondary" className="h-6 gap-1 px-1.5 font-mono text-[10px] font-normal">
+                          {m.id}
+                          <span className={cn("font-sans", m.contextWindow ? "text-muted-foreground" : "text-amber-600")}>
+                            {m.contextWindow ? formatTokens(m.contextWindow) : "无窗口"}
+                          </span>
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : null}
+                  <p className="text-[10.5px] leading-relaxed text-muted-foreground/75">
+                    写入前请完全退出 ZCode —— 它运行时会重写这份配置，覆盖本次改动。路径
+                    <span className="ml-1 font-mono">{zcode.path}</span>
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
+
           {/* 额外放行模型 */}
           <Card className="mb-5">
             <CardContent className="p-0">
@@ -610,4 +722,11 @@ function SettingRow({
       <div className="flex shrink-0 items-center gap-2 sm:justify-end">{children}</div>
     </div>
   );
+}
+
+/** 上下文窗口的紧凑写法：180000 → 180K，1000000 → 1M */
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return String(n);
 }

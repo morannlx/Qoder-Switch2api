@@ -152,7 +152,50 @@ async fn list_models(State((state, edition_value)): State<(Arc<AppState>, String
             }));
         }
     }
-    Json(json!({ "object": "list", "data": models }))
+    Json(json!({ "object": "list", "data": models.iter().map(|m| model_entry(m, &edition_value)).collect::<Vec<Value>>() }))
+}
+
+/// 上游 model_config 声明的是 180000（见 chat.rs 的 legacy 模板）。
+/// ZCode 的上下文条 = contextUsed / contextWindow，窗口取自 provider 配置里
+/// 该模型的 properties.contextWindow；网关这边先把同一个数广播出去。
+const MODEL_CONTEXT_WINDOW: i64 = 180_000;
+const MODEL_MAX_OUTPUT: i64 = 32_768;
+
+/// /v1/models 的单条记录：兼容各家客户端的字段拼写。
+/// capabilities.vision / supports_vision / input_modalities / limit.context 都是
+/// 同一份事实的不同写法，一并给出，客户端读哪种都能拿到。
+fn model_entry(model: &Value, edition_value: &str) -> Value {
+    let id = model.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let name = model
+        .get("display_name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(id);
+    let vision = model.get("isVl").and_then(|v| v.as_bool()).unwrap_or(true);
+    let reasoning = model.get("isReasoning").and_then(|v| v.as_bool()).unwrap_or(false);
+    let inputs = if vision { json!(["text", "image"]) } else { json!(["text"]) };
+    json!({
+        "id": id,
+        "object": "model",
+        "created": model.get("created").cloned().unwrap_or_else(|| json!(now_secs())),
+        "owned_by": model.get("owned_by").and_then(|v| v.as_str()).unwrap_or("qoder"),
+        "display_name": name,
+        "name": name,
+        // 上下文窗口：各家拼写不同，全部给出
+        "context_length": MODEL_CONTEXT_WINDOW,
+        "max_input_tokens": MODEL_CONTEXT_WINDOW,
+        "max_output_tokens": MODEL_MAX_OUTPUT,
+        "max_completion_tokens": MODEL_MAX_OUTPUT,
+        "limit": { "context": MODEL_CONTEXT_WINDOW, "output": MODEL_MAX_OUTPUT },
+        "capabilities": { "vision": vision, "tool_calls": true, "reasoning": reasoning },
+        "supports_vision": vision,
+        "supports_tool_calls": true,
+        "supports_reasoning": reasoning,
+        "input_modalities": inputs,
+        "output_modalities": ["text"],
+        "modalities": { "input": inputs, "output": ["text"] },
+        "edition": edition_value,
+    })
 }
 
 fn now_secs() -> i64 {
@@ -530,6 +573,62 @@ fn token_totals(usage: Option<&TokenUsage>, messages: &[Value], content: &str) -
     (prompt, completion, total)
 }
 
+/// OpenAI 形状的 usage 块（流式收尾帧与非流式响应共用）。
+///
+/// prompt_tokens 按 OpenAI 语义**含**缓存命中部分，命中数同时写进
+/// prompt_tokens_details.cached_tokens —— ZCode / Cherry Studio / LobeChat
+/// 都从这里读 cacheReads，读不到就当成「没有缓存」，上下文条与命中率都不对。
+fn chat_usage(usage: Option<&TokenUsage>, messages: &[Value], content: &str) -> Value {
+    let (prompt, completion, total) = token_totals(usage, messages, content);
+    let cached = usage.map(|u| u.cached_tokens.max(0).min(prompt)).unwrap_or(0);
+    let mut block = json!({
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total,
+    });
+    if cached > 0 {
+        block["prompt_tokens_details"] = json!({ "cached_tokens": cached });
+        // 兼容别名：部分客户端只认下面两种拼写
+        block["cache_read_input_tokens"] = json!(cached);
+        block["cached_tokens"] = json!(cached);
+    }
+    let reasoning = usage.map(|u| u.reasoning_tokens).unwrap_or(0);
+    if reasoning > 0 {
+        block["completion_tokens_details"] = json!({ "reasoning_tokens": reasoning });
+    }
+    block
+}
+
+/// Anthropic 形状的 usage 块。
+///
+/// Anthropic 的 input_tokens 是**未命中缓存**的那部分，客户端把
+/// input + cache_read + cache_creation 三者相加才是整段上下文。上游给的是
+/// OpenAI 语义（prompt_tokens 已包含缓存命中），直接照抄会让上下文看起来
+/// 是实际的两倍，所以要减掉命中部分。
+fn anthropic_usage(usage: Option<&TokenUsage>, messages: &[Value], content: &str) -> Value {
+    let (prompt, completion, _) = token_totals(usage, messages, content);
+    let cached = usage.map(|u| u.cached_tokens.max(0).min(prompt)).unwrap_or(0);
+    json!({
+        "input_tokens": (prompt - cached).max(0),
+        "output_tokens": completion,
+        "cache_read_input_tokens": cached,
+        "cache_creation_input_tokens": 0,
+    })
+}
+
+/// Responses 形状的 usage 块：与 chat 同语义，命中数放 details
+fn responses_usage(usage: Option<&TokenUsage>, messages: &[Value], content: &str) -> Value {
+    let (prompt, completion, total) = token_totals(usage, messages, content);
+    let cached = usage.map(|u| u.cached_tokens.max(0).min(prompt)).unwrap_or(0);
+    json!({
+        "input_tokens": prompt,
+        "input_tokens_details": { "cached_tokens": cached },
+        "output_tokens": completion,
+        "output_tokens_details": { "reasoning_tokens": usage.map(|u| u.reasoning_tokens).unwrap_or(0) },
+        "total_tokens": total,
+    })
+}
+
 fn record(
     edition_value: &str,
     account_id: &str,
@@ -578,6 +677,7 @@ async fn chat_stream(
     reasoning_effort: Option<String>,
     thinking_type: Option<String>,
     thinking_budget: Option<i64>,
+    want_usage: bool,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>(64);
     tokio::spawn(async move {
@@ -709,6 +809,19 @@ async fn chat_stream(
                     "model": model,
                     "choices": [{ "index": 0, "delta": {}, "finish_reason": if has_tools { "tool_calls" } else { "stop" } }]
                 }));
+                // usage 收尾帧：OpenAI 的 include_usage 契约要求它在 finish 帧
+                // 之后、[DONE] 之前，且 choices 必须为空。ZCode 等客户端只认
+                // 这一帧来算上下文用量（contextUsed），缺了它上下文条就是空的。
+                if want_usage {
+                    send_json!(json!({
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model,
+                        "choices": [],
+                        "usage": chat_usage(usage.as_ref(), &messages, &content)
+                    }));
+                }
                 let _ = tx.send(Ok("data: [DONE]\n\n".to_string())).await;
                 record(
                     &edition_value,
@@ -788,6 +901,11 @@ async fn chat_completions(
     let image_urls = collect_image_urls(&messages);
 
     if want_stream {
+        let want_usage = body
+            .get("stream_options")
+            .and_then(|v| v.get("include_usage"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
         return chat_stream(
             state,
             edition_value,
@@ -798,6 +916,7 @@ async fn chat_completions(
             body.get("reasoning_effort").and_then(|v| v.as_str()).map(|v| v.to_string()),
             body.get("thinking").and_then(|v| v.get("type")).and_then(|v| v.as_str()).map(|v| v.to_string()),
             body.get("thinking").and_then(|v| v.get("budget_tokens")).and_then(|v| v.as_i64()),
+            want_usage,
         )
         .await;
     }
@@ -870,6 +989,7 @@ async fn chat_completions(
             message["tool_calls"] = json!(tool_calls);
         }
         let (prompt_tokens, completion_tokens, total_tokens) = token_totals(usage.as_ref(), &messages, &content);
+        let _ = (prompt_tokens, completion_tokens, total_tokens);
         return Json(json!({
             "id": completion_id,
             "object": "chat.completion",
@@ -880,11 +1000,7 @@ async fn chat_completions(
                 "message": message,
                 "finish_reason": if tool_calls.is_empty() { "stop" } else { "tool_calls" }
             }],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens
-            }
+            "usage": chat_usage(usage.as_ref(), &messages, &content)
         }))
         .into_response();
     }
@@ -1007,11 +1123,7 @@ async fn responses(
         "status": "completed",
         "model": model,
         "output": output,
-        "usage": {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": total_tokens
-        }
+        "usage": responses_usage(usage.as_ref(), &messages, &content)
     }))
     .into_response()
 }
@@ -1106,16 +1218,24 @@ async fn messages(
     if content_blocks.is_empty() {
         content_blocks.push(json!({ "type": "text", "text": "" }));
     }
-    let (input_tokens, output_tokens, _) = token_totals(usage.as_ref(), &messages, &content);
     let stop_reason = if tool_calls.is_empty() { "end_turn" } else { "tool_use" };
+    let anthropic_usage_block = anthropic_usage(usage.as_ref(), &messages, &content);
 
     if body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false) {
         let mut sse = String::new();
+        // message_start 的 usage 必须与 message_delta 同语义（input 为未命中
+        // 缓存部分），否则 ZCode 的上下文累加器会把命中算两遍
+        let start_usage = json!({
+            "input_tokens": anthropic_usage_block["input_tokens"],
+            "output_tokens": 0,
+            "cache_read_input_tokens": anthropic_usage_block["cache_read_input_tokens"],
+            "cache_creation_input_tokens": 0
+        });
         sse.push_str(&format!(
             "event: message_start\ndata: {}\n\n",
             json!({
                 "type": "message_start",
-                "message": { "id": &msg_id, "type": "message", "role": "assistant", "model": &model, "content": [], "usage": { "input_tokens": input_tokens, "output_tokens": 0 } }
+                "message": { "id": &msg_id, "type": "message", "role": "assistant", "model": &model, "content": [], "usage": start_usage }
             })
         ));
         for (index, block) in content_blocks.iter().enumerate() {
@@ -1139,7 +1259,7 @@ async fn messages(
         }
         sse.push_str(&format!(
             "event: message_delta\ndata: {}\n\n",
-            json!({ "type": "message_delta", "delta": { "stop_reason": stop_reason }, "usage": { "output_tokens": output_tokens } })
+            json!({ "type": "message_delta", "delta": { "stop_reason": stop_reason, "stop_sequence": null }, "usage": anthropic_usage_block })
         ));
         sse.push_str(&format!("event: message_stop\ndata: {}\n\n", json!({ "type": "message_stop" })));
         return Response::builder()
@@ -1158,10 +1278,7 @@ async fn messages(
         "model": model,
         "content": content_blocks,
         "stop_reason": stop_reason,
-        "usage": {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens
-        }
+        "usage": anthropic_usage_block
     }))
     .into_response()
 }

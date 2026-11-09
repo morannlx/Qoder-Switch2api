@@ -76,3 +76,37 @@ export function resolveModelRequest(raw) {
   }
   return { key: value, effort: "" };
 }
+
+/**
+ * 反代对外宣告的模型目录（/v1/models 与 ZCode 接入共用同一份）。
+ *
+ * 两边必须一致：ZCode 的 provider 模型清单与每个模型的上下文窗口都按这里
+ * 写进 provider_config.json，而 /v1/models 是别的客户端（Codex、Cherry
+ * Studio）读的同一份事实。任何一侧单独变动都会让上下文条与实际窗口不一致。
+ *
+ * @param {object} edition 档位定义
+ * @param {object} config  该档位的反代配置（extraModels / apiKey 等）
+ * @param {object} opts    { pickAccount, fetchModelList, defaults }
+ */
+export async function modelCatalogForProxy(edition, config, opts = {}) {
+  const defaults = opts.defaults || [
+    { id: "auto", displayName: "Auto（默认）", isReasoning: true, isVl: true },
+    { id: "lite", displayName: "Lite", isReasoning: true, isVl: true },
+  ];
+  const models = defaults.map((m) => ({ ...m }));
+  const account = opts.pickAccount?.(edition.value);
+  if (account && opts.fetchModelList) {
+    try {
+      const upstream = await opts.fetchModelList(edition, account);
+      for (const m of upstream) {
+        if (!models.some((x) => x.id === m.id)) models.push(m);
+      }
+    } catch {
+      /* 上游不可达时只用默认列表 */
+    }
+  }
+  for (const id of config?.extraModels || []) {
+    if (id && !models.some((x) => x.id === id)) models.push({ id, displayName: id, extra: true });
+  }
+  return models;
+}

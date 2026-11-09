@@ -245,6 +245,26 @@ export interface BackupResult {
   skipped: { index: number; name: string; error: string }[];
 }
 
+/**
+ * ZCode 一键接入状态（读 ~/.zcode/v2/provider_config.json）。
+ *
+ * `baseUrl` 是配置里**已写入**的地址，`wantedBaseUrl` 是本档位反代现在的
+ * 地址；两者不一致说明用户改过端口，接入已过期。
+ */
+export interface ZcodeStatus {
+  installed: boolean;
+  path: string;
+  applied: boolean;
+  providerId: string;
+  baseUrl: string;
+  protocol: string;
+  modelCount: number;
+  models: { id: string; contextWindow: number | null }[];
+  wantedBaseUrl: string;
+  edition: string;
+  enabled: boolean;
+}
+
 export const ACCOUNT_GROUPS = [
   { value: "", label: "未分组" },
   { value: "desktop", label: "桌面端" },
