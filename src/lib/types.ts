@@ -193,17 +193,37 @@ export interface UpdateDownloadStatus {
   version: string;
 }
 
+export interface UsageBucket {
+  requests: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  errors: number;
+}
+
 export interface UsageStats {
-  totals: { requests: number; promptTokens: number; completionTokens: number; totalTokens: number; errors: number };
-  byAccount: { name: string; requests: number; promptTokens: number; completionTokens: number; totalTokens: number; errors: number }[];
-  byModel: { name: string; requests: number; promptTokens: number; completionTokens: number; totalTokens: number; errors: number }[];
-  byApi: { name: string; requests: number; promptTokens: number; completionTokens: number; totalTokens: number; errors: number }[];
-  daily: { day: string; requests: number; promptTokens: number; completionTokens: number; totalTokens: number; errors: number }[];
+  /** 终身累计（= windows.all），不受明细裁剪影响 */
+  totals: UsageBucket;
+  /** 时间窗口统计，来自按天汇总而非明细 */
+  windows: {
+    today: UsageBucket;
+    d7: UsageBucket;
+    d15: UsageBucket;
+    d30: UsageBucket;
+    all: UsageBucket;
+  };
+  byAccount: ({ name: string } & UsageBucket)[];
+  byModel: ({ name: string } & UsageBucket)[];
+  byApi: ({ name: string } & UsageBucket)[];
+  daily: ({ day: string } & UsageBucket)[];
   recent: {
     ts: number; edition: string; accountName: string; model: string;
     promptTokens: number; completionTokens: number; totalTokens: number;
     success: boolean; error: string; api: string;
   }[];
+  /** 明细能回溯到哪一天（分布图只覆盖这段时间） */
+  detailSince: string | null;
+  detailCount: number;
 }
 
 export interface Workspace {
