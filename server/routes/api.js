@@ -4,7 +4,7 @@
 import express from "express";
 import { execFile } from "node:child_process";
 import { accountManager } from "../qoder/account.js";
-import { EDITIONS, accountGroupLabel } from "../editions.js";
+import { EDITIONS, accountGroupLabel, editionOf } from "../editions.js";
 import * as oauth from "../qoder/oauth.js";
 import * as info from "../qoder/info.js";
 import * as switcher from "../switcher.js";
@@ -688,7 +688,7 @@ function proxyBaseUrl(config, editionValue) {
  * 少了这一份，ZCode 里就是「模型能选但上下文窗口是默认 2e5」。
  */
 async function proxyModelCatalog(editionValue, config) {
-  const edition = getEdition(editionValue);
+  const edition = editionOf(editionValue);
   return modelCatalogForProxy(edition, config, {
     pickAccount: (value) => accountManager.pick(value),
     fetchModelList: (ed, account) => info.fetchModelList(ed, account),
